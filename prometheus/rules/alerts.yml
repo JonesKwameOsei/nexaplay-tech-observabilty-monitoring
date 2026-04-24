@@ -1,0 +1,41 @@
+groups:
+  - name: nexaplay-alerts
+    rules:
+
+      # Fires when the app container is unreachable (no scrape data)
+      - alert: ServiceDown
+        expr: up{job="nexaplay-app"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "NexaPlay game server is DOWN"
+          description: "The nexaplay-app target has been unreachable for more than 1 minute."
+
+      # Fires when the error rate on matchmaking exceeds 10%
+      - alert: HighErrorRate
+        expr: >
+          (
+            rate(http_requests_total{endpoint="/matchmaking/find", status="500"}[2m])
+            /
+            rate(http_requests_total{endpoint="/matchmaking/find"}[2m])
+          ) > 0.10
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High error rate on matchmaking"
+          description: "Matchmaking error rate is above 10% for the last 2 minutes."
+
+      # Fires when matchmaking response time p95 exceeds 1 second
+      - alert: HighMatchmakingLatency
+        expr: >
+          histogram_quantile(0.95,
+            rate(http_request_duration_seconds_bucket{endpoint="/matchmaking/find"}[2m])
+          ) > 1.0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Matchmaking latency is high"
+          description: "95th percentile matchmaking response time has exceeded 1 second for 1 minute."
