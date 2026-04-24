@@ -34,16 +34,13 @@ services:
 
   # ── Alertmanager ───────────────────────────────────────────────────────────
   alertmanager:
-    image: prom/alertmanager:v0.27.0
+    build:
+      context: ./alertmanager
     container_name: nexaplay-alertmanager
     ports:
       - "9093:9093"
-    volumes:
-      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
-    command:
-      - "--config.file=/etc/alertmanager/alertmanager.yml"
     environment:
-      - ALERTMANAGER_WEBHOOK_URL=${ALERTMANAGER_WEBHOOK_URL:-https://webhook.site/your-uuid-here}
+      - ALERTMANAGER_WEBHOOK_URL=${ALERTMANAGER_WEBHOOK_URL}
     restart: unless-stopped
 
   # ── Node Exporter ──────────────────────────────────────────────────────────

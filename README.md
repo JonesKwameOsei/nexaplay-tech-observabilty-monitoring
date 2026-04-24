@@ -32,4 +32,26 @@ The application is already instrumented. Everything else is yours to build:
 
 1. Read the full case study document before writing a single line
 2. Complete the Pre-Assessment first
-3. Get the app running — that is Day 1
+3. Copy `.env.example` to `.env` and fill in your values:
+   ```bash
+   cp .env.example .env
+   ```
+4. Start the full stack (builds custom images + starts all 5 services):
+   ```bash
+   docker compose up -d --build
+   ```
+5. Verify all containers are healthy:
+   ```bash
+   docker compose ps
+   ```
+
+| Service       | URL                    |
+|---------------|------------------------|
+| Game server   | http://localhost:8000  |
+| Prometheus    | http://localhost:9090  |
+| Alertmanager  | http://localhost:9093  |
+| Grafana       | http://localhost:3000  |
+
+> **Note:** Always use `--build` on first run or after changing `alertmanager/Dockerfile`
+> or `app/Dockerfile`. Plain `docker compose up -d` will fail on a fresh clone
+> because the custom images don't exist yet.
