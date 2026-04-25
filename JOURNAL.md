@@ -246,3 +246,76 @@ This is evident that the 10s scrape_interval for the app has been successfully c
 ![prometheus_targets](images/prometheus-target.png)
 
 ---
+
+## Day 3: Build the Monitoring Dashboard
+
+### Overview
+
+The goal for Day 3 was to build a focused, four-panel Grafana dashboard that gives a real-time view of platform health — covering active players, request throughput, error rate, and CPU usage from Node Exporter.
+
+The dashboard was defined as code in `grafana/dashboards/nexaplay-overview.json` and is automatically provisioned by Grafana on startup via `grafana/provisioning/dashboards/dashboard-provider.yml`. No manual clicking required — the dashboard appears as soon as the stack is running.
+
+---
+
+### Panel 1 — Active Players (Stat)
+
+**Query:** `nexaplay_active_players`
+
+A Stat panel showing the current number of active players on the platform. The value is sourced from the `nexaplay_active_players` Gauge metric, which is updated every 5 seconds by a background thread in `app/main.py`. During normal operation this fluctuates between 800–1200.
+
+---
+
+### Panel 2 — Request Rate per Second (Time Series)
+
+**Query:** `rate(http_requests_total[1m])`
+
+A Time Series panel showing the rolling per-second request rate across all endpoints and status codes. The `rate()` function calculates the average increase per second over the last 1 minute, smoothing out spikes. The dashboard time range is set to **Last 30 minutes** to keep the view focused on recent activity.
+
+---
+
+### Panel 3 — Error Rate % (Stat)
+
+**Query:** `rate(http_requests_total{status=~"5.."}[1m]) / rate(http_requests_total[1m]) * 100`
+
+A Stat panel showing the current error rate as a percentage of total traffic. The numerator filters for any 5xx status code using a regex label matcher. The panel will show **No data** when there are no errors — which is the expected behaviour under normal conditions. Errors only appear when the incident mode is triggered via `POST /admin/incident/start`.
+
+Colour thresholds applied:
+
+| Threshold | Colour |
+|-----------|--------|
+| Below 2%  | Green  |
+| 2% – 5%   | Amber  |
+| Above 5%  | Red    |
+
+---
+
+### Panel 4 — CPU Usage (Gauge)
+
+**Query:** `100 - (avg(rate(node_cpu_seconds_total{job="node-exporter", mode="idle"}[1m])) * 100)`
+
+A Gauge panel showing current CPU utilisation as a percentage, sourced exclusively from the `node-exporter` scrape target (`node-exporter:9100`). The `job="node-exporter"` label filter ensures the metric is not mixed with any other scrape target. Max value is set to 100.
+
+---
+
+### Dashboard Screenshot
+
+![4-panel dashboard](images/grafana-dashboards-4-panels.png)
+
+---
+
+### Dashboard JSON
+
+The finished dashboard was exported and saved to `grafana/dashboards/nexaplay-overview.json`. Below is a snapshot of the JSON structure:
+
+![dashboard json](images/code.png)
+
+The file is version-controlled and automatically provisioned by Grafana on container startup — no manual import needed.
+
+---
+
+### Key Takeaways
+
+- Grafana provisioning via JSON means the dashboard is reproducible and portable — anyone cloning the repo gets the same dashboard on `docker compose up`.
+- The error rate panel correctly shows **No data** in a healthy system. This is intentional — the absence of 5xx series means no errors are occurring.
+- Scoping the CPU query to `job="node-exporter"` is important in multi-job environments to avoid accidentally pulling metrics from the wrong scrape target.
+- The `rate()` function is essential for Counter metrics like `http_requests_total` — querying the raw counter gives a monotonically increasing number, not a useful rate.

@@ -2,15 +2,15 @@
   "title": "NexaPlay Server Health",
   "uid": "nexaplay-overview",
   "schemaVersion": 38,
-  "version": 1,
+  "version": 2,
   "refresh": "10s",
-  "time": { "from": "now-1h", "to": "now" },
+  "time": { "from": "now-30m", "to": "now" },
   "panels": [
     {
       "id": 1,
       "title": "Active Players",
       "type": "stat",
-      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 8 },
       "targets": [
         {
           "expr": "nexaplay_active_players",
@@ -38,39 +38,9 @@
     },
     {
       "id": 2,
-      "title": "Matchmaking Queue",
-      "type": "stat",
-      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
-      "targets": [
-        {
-          "expr": "nexaplay_matchmaking_queue",
-          "legendFormat": "Queue Size",
-          "refId": "A"
-        }
-      ],
-      "options": {
-        "colorMode": "background",
-        "graphMode": "area",
-        "reduceOptions": { "calcs": ["lastNotNull"] }
-      },
-      "fieldConfig": {
-        "defaults": {
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 50 },
-              { "color": "red", "value": 100 }
-            ]
-          }
-        }
-      }
-    },
-    {
-      "id": 3,
       "title": "Request Rate (per second)",
       "type": "timeseries",
-      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "gridPos": { "x": 6, "y": 0, "w": 18, "h": 8 },
       "targets": [
         {
           "expr": "rate(http_requests_total[1m])",
@@ -86,108 +56,63 @@
       }
     },
     {
-      "id": 4,
-      "title": "Error Rate — Matchmaking (%)",
-      "type": "timeseries",
-      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+      "id": 3,
+      "title": "Error Rate (%)",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 8, "w": 6, "h": 8 },
       "targets": [
         {
-          "expr": "100 * rate(http_requests_total{endpoint=\"/matchmaking/find\", status=\"500\"}[2m]) / rate(http_requests_total{endpoint=\"/matchmaking/find\"}[2m])",
+          "expr": "rate(http_requests_total{status=~'5..'}[1m]) / rate(http_requests_total[1m]) * 100",
           "legendFormat": "Error Rate %",
           "refId": "A"
         }
       ],
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "percent",
-          "custom": { "lineWidth": 2 },
           "thresholds": {
             "mode": "absolute",
             "steps": [
               { "color": "green", "value": null },
-              { "color": "yellow", "value": 5 },
-              { "color": "red", "value": 10 }
+              { "color": "yellow", "value": 2 },
+              { "color": "red", "value": 5 }
             ]
           }
         }
       }
     },
     {
-      "id": 5,
-      "title": "Matchmaking Response Time (p50 / p95)",
-      "type": "timeseries",
-      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
-      "targets": [
-        {
-          "expr": "histogram_quantile(0.50, rate(http_request_duration_seconds_bucket{endpoint=\"/matchmaking/find\"}[2m]))",
-          "legendFormat": "p50",
-          "refId": "A"
-        },
-        {
-          "expr": "histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{endpoint=\"/matchmaking/find\"}[2m]))",
-          "legendFormat": "p95",
-          "refId": "B"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "custom": { "lineWidth": 2 }
-        }
-      }
-    },
-    {
-      "id": 6,
+      "id": 4,
       "title": "CPU Usage (%)",
-      "type": "timeseries",
-      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 8 },
+      "type": "gauge",
+      "gridPos": { "x": 6, "y": 8, "w": 18, "h": 8 },
       "targets": [
         {
-          "expr": "100 - (avg by(instance) (rate(node_cpu_seconds_total{mode=\"idle\"}[1m])) * 100)",
+          "expr": "100 - (avg(rate(node_cpu_seconds_total{job='node-exporter',mode='idle'}[1m])) * 100)",
           "legendFormat": "CPU %",
           "refId": "A"
         }
       ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "percent",
           "min": 0,
           "max": 100,
-          "custom": { "lineWidth": 2 },
           "thresholds": {
             "mode": "absolute",
             "steps": [
               { "color": "green", "value": null },
               { "color": "yellow", "value": 70 },
-              { "color": "red", "value": 90 }
-            ]
-          }
-        }
-      }
-    },
-    {
-      "id": 7,
-      "title": "Memory Usage (%)",
-      "type": "timeseries",
-      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 8 },
-      "targets": [
-        {
-          "expr": "100 * (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes))",
-          "legendFormat": "Memory %",
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percent",
-          "min": 0,
-          "max": 100,
-          "custom": { "lineWidth": 2 },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 75 },
               { "color": "red", "value": 90 }
             ]
           }
