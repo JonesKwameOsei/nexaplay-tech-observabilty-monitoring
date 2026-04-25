@@ -386,7 +386,7 @@ The `send_resolved: true` flag means Alertmanager also sends a notification when
 
 The webhook URL was obtained from [webhook.site](https://webhook.site), which provides a unique, disposable URL that logs all incoming HTTP requests in real time.
 
-**Validate the alerts.yml syntax by running promtool inside the Prometheus container:
+**Validate the alerts.yml syntax by running promtool inside the Prometheus container**:
 
 ```sh
 docker exec nexaplay-prometheus promtool check config //etc//prometheus//prometheus.yml
