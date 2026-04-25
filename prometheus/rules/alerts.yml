@@ -12,20 +12,19 @@ groups:
           summary: "NexaPlay game server is DOWN"
           description: "The nexaplay-app target has been unreachable for more than 1 minute."
 
-      # Fires when the error rate on matchmaking exceeds 10%
+      # Fires when 5xx error rate exceeds 5% of total requests for 2 consecutive minutes
       - alert: HighErrorRate
         expr: >
-          (
-            rate(http_requests_total{endpoint="/matchmaking/find", status="500"}[2m])
-            /
-            rate(http_requests_total{endpoint="/matchmaking/find"}[2m])
-          ) > 0.10
-        for: 1m
+          rate(http_requests_total{status=~"5.."}[1m])
+          /
+          rate(http_requests_total[1m])
+          * 100 > 5
+        for: 2m
         labels:
           severity: warning
         annotations:
-          summary: "High error rate on matchmaking"
-          description: "Matchmaking error rate is above 10% for the last 2 minutes."
+          summary: "High 5xx error rate on NexaPlay"
+          description: "5xx error rate has exceeded 5% of total requests for more than 2 minutes."
 
       # Fires when matchmaking response time p95 exceeds 1 second
       - alert: HighMatchmakingLatency

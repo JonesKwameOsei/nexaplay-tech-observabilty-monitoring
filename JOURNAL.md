@@ -319,3 +319,143 @@ The file is version-controlled and automatically provisioned by Grafana on conta
 - The error rate panel correctly shows **No data** in a healthy system. This is intentional — the absence of 5xx series means no errors are occurring.
 - Scoping the CPU query to `job="node-exporter"` is important in multi-job environments to avoid accidentally pulling metrics from the wrong scrape target.
 - The `rate()` function is essential for Counter metrics like `http_requests_total` — querying the raw counter gives a monotonically increasing number, not a useful rate.
+
+---
+
+## Day 4: Alerting — ServiceDown & HighErrorRate
+
+### Overview
+
+The goal for Day 4 was to wire up end-to-end alerting: define alert rules in Prometheus, configure Alertmanager to forward notifications to a webhook receiver, and then test the full pipeline by deliberately stopping the app container and watching the alert travel from PENDING → FIRING → resolved.
+
+---
+
+### Alert Rules Defined (`prometheus/rules/alerts.yml`)
+
+Two alert rules were written (the existing `HighMatchmakingLatency` rule was preserved):
+
+#### 1. `ServiceDown`
+
+```yaml
+- alert: ServiceDown
+  expr: up{job="nexaplay-app"} == 0
+  for: 1m
+  labels:
+    severity: critical
+  annotations:
+    summary: "NexaPlay game server is DOWN"
+    description: "The nexaplay-app target has been unreachable for more than 1 minute."
+```
+
+Fires when Prometheus cannot scrape the `nexaplay-app` target (`up == 0`). The `for: 1m` clause means the condition must hold for a full minute before the alert transitions from PENDING to FIRING — this prevents false positives from a single missed scrape.
+
+#### 2. `HighErrorRate`
+
+```yaml
+- alert: HighErrorRate
+  expr: >
+    rate(http_requests_total{status=~"5.."}[1m])
+    /
+    rate(http_requests_total[1m])
+    * 100 > 5
+  for: 2m
+  labels:
+    severity: warning
+  annotations:
+    summary: "High 5xx error rate on NexaPlay"
+    description: "5xx error rate has exceeded 5% of total requests for more than 2 minutes."
+```
+
+Fires when 5xx responses exceed 5% of total traffic for 2 consecutive minutes. The `status=~"5.."` regex matches any 500-level status code. The `for: 2m` window filters out brief error spikes.
+
+---
+
+### Alertmanager Webhook Configuration
+
+The `alertmanager/alertmanager.yml.tmpl` was already configured to route all alerts to a webhook receiver using `${ALERTMANAGER_WEBHOOK_URL}` as a placeholder. The actual URL is stored in `.env` and injected at container startup via `envsubst` in the custom Alertmanager Dockerfile — no secrets in version control.
+
+```yaml
+receivers:
+  - name: "webhook"
+    webhook_configs:
+      - url: "${ALERTMANAGER_WEBHOOK_URL}"
+        send_resolved: true
+```
+
+The `send_resolved: true` flag means Alertmanager also sends a notification when the alert clears — important for confirming recovery.
+
+The webhook URL was obtained from [webhook.site](https://webhook.site), which provides a unique, disposable URL that logs all incoming HTTP requests in real time.
+
+**Validate the alerts.yml syntax by running promtool inside the Prometheus container:
+
+```sh
+docker exec nexaplay-prometheus promtool check config //etc//prometheus//prometheus.yml
+```
+
+**Output**:
+
+```sh
+Checking //etc//prometheus//prometheus.yml
+  SUCCESS: 1 rule files found
+ SUCCESS: //etc//prometheus//prometheus.yml is valid prometheus config file syntax
+
+Checking /etc/prometheus/rules/alerts.yml
+  SUCCESS: 3 rules found
+```
+
+All looks good to test the alerts.
+
+---
+
+### Testing the ServiceDown Alert
+
+**Step 1 — Stop the app container:**
+
+```sh
+docker compose stop app
+```
+
+**Step 2 — Watch Prometheus at `localhost:9090/alerts`:**
+
+Within ~15 seconds the `ServiceDown` alert appeared in **PENDING** state (Prometheus detected `up == 0` but the `for: 1m` window had not elapsed yet).
+
+![alert_pending](images/prometheus-alert-pending.png)
+
+After approximately 1 minute the alert transitioned to **FIRING**. Prometheus then forwarded the alert to Alertmanager.
+
+![alert_firing](images/prometheus-alert-firing.png)
+
+**Step 3 — Check webhook.site:**
+
+The incoming alert notification arrived at the webhook URL. The payload was a standard Alertmanager JSON body containing:
+
+- `status: "firing"`
+- `labels`: `alertname: ServiceDown`, `severity: critical`, `job: nexaplay-app`
+- `annotations`: summary and description as defined in the rule
+- `startsAt` timestamp
+
+![alert_webhook](images/prometheus-alert-webhook.png)
+
+**Step 4 — Restore the service:**
+
+```sh
+docker compose start app
+```
+
+Within ~30 seconds Prometheus detected `up == 1` again. The `ServiceDown` alert moved back to **inactive** in the Prometheus UI. 
+
+![alert_inactive](images/prometheus-alert-incative.png)
+
+Alertmanager sent a second notification to webhook.site with `status: "resolved"` and a `endsAt` timestamp — confirming the recovery pipeline works end-to-end.
+
+![alert_webhook_resolved](images/prometheus-alert-webhook-resolved.png)
+
+---
+
+### Key Takeaways
+
+- The `for` duration is critical: without it, a single missed scrape would immediately fire a critical alert. The 1-minute window gives the system time to recover from transient network blips before paging anyone.
+- `send_resolved: true` is essential in production — without it you only know when things break, not when they recover.
+- The `envsubst` pattern for Alertmanager config keeps secrets out of version control while still making the config fully reproducible. Any team member sets their own `ALERTMANAGER_WEBHOOK_URL` in `.env` and gets a working alerting pipeline with `docker compose up --build`.
+- webhook.site is a fast, zero-setup way to validate the full alerting pipeline before connecting a real notification channel (PagerDuty, Slack, etc.).
+- The PENDING → FIRING → resolved lifecycle in Prometheus maps directly to the firing → resolved notifications in Alertmanager — understanding this state machine is key to debugging alert delivery issues.
