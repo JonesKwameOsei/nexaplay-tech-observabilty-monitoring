@@ -4,6 +4,8 @@ This document contains daily accomplishments.
 
 ---
 
+## Week One
+
 ## Day 1: Setting Up Tools
 
 **What I did today:**
@@ -459,3 +461,52 @@ Alertmanager sent a second notification to webhook.site with `status: "resolved"
 - The `envsubst` pattern for Alertmanager config keeps secrets out of version control while still making the config fully reproducible. Any team member sets their own `ALERTMANAGER_WEBHOOK_URL` in `.env` and gets a working alerting pipeline with `docker compose up --build`.
 - webhook.site is a fast, zero-setup way to validate the full alerting pipeline before connecting a real notification channel (PagerDuty, Slack, etc.).
 - The PENDING → FIRING → resolved lifecycle in Prometheus maps directly to the firing → resolved notifications in Alertmanager — understanding this state machine is key to debugging alert delivery issues.
+
+---
+
+## Day 5: Week 1 Summary — The Full Stack in Plain English
+
+### What Each Tool Does and How They Connect
+
+The observability stack built this week has five moving parts. Here is what each one does and how they wire together.
+
+**FastAPI app (`app/main.py`)** is the system being monitored. It exposes a `/metrics` endpoint that publishes four Prometheus-format metrics: a request counter, a latency histogram, an active-player gauge, and a matchmaking-queue gauge. Every other tool in the stack exists to consume what this endpoint produces.
+
+**Prometheus** is the metrics engine. It runs a scrape loop — every 10 seconds for the app, every 15 seconds for everything else — pulling the `/metrics` endpoint from each target and storing the time-series data locally. It also evaluates the alert rules in `alerts.yml` on every scrape cycle. When a rule condition is met and holds for the required `for` duration, Prometheus changes the alert state from inactive → PENDING → FIRING and forwards the firing alert to Alertmanager. Prometheus does not send notifications itself — that is Alertmanager's job.
+
+**Alertmanager** receives firing alerts from Prometheus and handles the notification routing. It groups related alerts, applies silences and inhibition rules, and dispatches notifications to configured receivers. In this stack the receiver is a webhook — Alertmanager sends an HTTP POST with a JSON payload to the configured URL whenever an alert fires or resolves. The `send_resolved: true` flag means recovery notifications are sent automatically, not just the initial fire.
+
+**Node Exporter** is a sidecar that exposes host-level metrics — CPU, memory, disk, network — from the Docker host in Prometheus format. Prometheus scrapes it the same way it scrapes the app. This is what powers the CPU usage panel in Grafana without writing any custom instrumentation code.
+
+**Grafana** is the visualisation layer. It connects to Prometheus as a datasource and renders the stored time-series data into dashboards. The dashboard in this project is defined as a JSON file and provisioned automatically on container startup — Grafana reads it from the mounted volume and makes it available without any manual import. Grafana never touches the app or Alertmanager directly; it only reads from Prometheus.
+
+The data flow in one sentence: the **app** produces metrics → **Prometheus** scrapes and stores them → **Grafana** visualises them and **Alertmanager** acts on them when rules fire.
+
+```
+FastAPI app ──/metrics──► Prometheus ──PromQL──► Grafana (dashboards)
+                               │
+                          alert rules
+                               │
+                               ▼
+                         Alertmanager ──POST──► webhook.site / PagerDuty / Slack
+```
+
+Node Exporter feeds into Prometheus alongside the app, contributing host metrics to the same data store.
+
+---
+
+### Most Confusing Part
+
+The most confusing part was the **Alertmanager configuration and the `envsubst` templating pattern**.
+
+Alertmanager expects a static YAML file at startup. But hardcoding a webhook URL into a config file that lives in version control is a bad practice — the URL is effectively a secret (anyone with it can receive your alert payloads). The solution was to use a `.tmpl` template file with a `${ALERTMANAGER_WEBHOOK_URL}` placeholder, and a custom Dockerfile that runs `envsubst` at container startup to render the real file before Alertmanager reads it.
+
+The confusing part was that this is not a built-in Alertmanager feature — it required understanding three separate things at once: how Docker `ENTRYPOINT` works, how `envsubst` substitutes environment variables into files, and how to pass `.env` values through `docker-compose.yml` into the container environment. Getting the order of operations wrong (e.g. Alertmanager starting before `envsubst` finishes) would silently produce a broken config with a literal `${ALERTMANAGER_WEBHOOK_URL}` string as the URL.
+
+Once the pattern clicked it felt clean and production-grade. But it took longer to reason through than any of the PromQL or Grafana work.
+
+---
+
+### Week 1 in One Paragraph
+
+Week 1 went from zero to a fully operational observability stack: a FastAPI app instrumented with four custom metrics, Prometheus scraping and storing them, three alert rules covering service availability, error rate, and latency, Alertmanager routing notifications to a webhook with end-to-end delivery confirmed, and a four-panel Grafana dashboard provisioned as code. Every component is containerised, reproducible with a single `docker compose up --build`, and committed to GitHub. The stack is not just running — it is understood.
