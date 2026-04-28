@@ -482,7 +482,7 @@ The observability stack built this week has five moving parts. Here is what each
 
 The data flow in one sentence: the **app** produces metrics → **Prometheus** scrapes and stores them → **Grafana** visualises them and **Alertmanager** acts on them when rules fire.
 
-```
+```sh
 FastAPI app ──/metrics──► Prometheus ──PromQL──► Grafana (dashboards)
                                │
                           alert rules
@@ -510,3 +510,163 @@ Once the pattern clicked it felt clean and production-grade. But it took longer 
 ### Week 1 in One Paragraph
 
 Week 1 went from zero to a fully operational observability stack: a FastAPI app instrumented with four custom metrics, Prometheus scraping and storing them, three alert rules covering service availability, error rate, and latency, Alertmanager routing notifications to a webhook with end-to-end delivery confirmed, and a four-panel Grafana dashboard provisioned as code. Every component is containerised, reproducible with a single `docker compose up --build`, and committed to GitHub. The stack is not just running — it is understood.
+
+## Week two
+
+## Day 1: Review and Add a Fifth Panel to the Grafana Dashboard
+
+### Overview
+
+The goal for Day 1 of Week 2 was to review the existing incident report and understand what to monitor to help document the incident. Review the four-panel Grafana dashboard, add a fifth panel showing memory usage over the last hour, re-test the `ServiceDown` alert from a clean restart, and draft a runbook entry.
+
+---
+
+### Clean Restart Verification
+
+Before making any changes, the full stack was brought down and back up from scratch to confirm everything still works:
+
+```sh
+docker compose down
+```
+
+```sh
+[+] down 6/6
+ ✔ Container nexaplay-alertmanager                  Removed                                                         0.6s
+ ✔ Container nexaplay-node-exporter                 Removed                                                         0.8s
+ ✔ Container nexaplay-grafana                       Removed                                                         0.6s
+ ✔ Container nexaplay-prometheus                    Removed                                                         0.5s
+ ✔ Container nexaplay-app                           Removed                                                         0.7s
+ ✔ Network observability_monitoring_project_default Removed                                                         0.2s
+ ```
+
+```sh
+docker compose up --build -d
+```
+
+```sh
+[+] up 8/8
+ ✔ Image observability_monitoring_project-alertmanager Built                                                                                       2.4s
+ ✔ Image observability_monitoring_project-app          Built                                                                                       2.4s
+ ✔ Network observability_monitoring_project_default    Created                                                                                     0.0s
+ ✔ Container nexaplay-app                              Started                                                                                     0.5s
+ ✔ Container nexaplay-node-exporter                    Started                                                                                     0.7s
+ ✔ Container nexaplay-alertmanager                     Started                                                                                     0.7s
+ ✔ Container nexaplay-prometheus                       Started                                                                                     0.7s
+ ✔ Container nexaplay-grafana                          Started                                                                                     0.9s
+```
+
+All five services came up healthy:
+
+```sh
+docker compose ps
+```
+
+![docker-compose-ps2](images/docker-compose-ps2.png)
+
+Confirmed:
+- `http://localhost:9090/targets` — all three targets (`nexaplay-app`, `node-exporter`, `prometheus`) showing **UP**
+
+![prometheus-target2](images/docker-compose-ps2.png)
+
+- `http://localhost:3000` — Grafana dashboard loading with all four panels populated
+
+![grafana-dashboard2](images/grafana-dashboards-4-panels2.png)
+
+- `http://localhost:9090/alerts` — all alerts in **inactive** state (healthy baseline)
+
+![alert](images/prometheus-alert.png)
+
+---
+
+### Fifth Panel — Memory Usage (MB)
+
+A fifth panel was added to `grafana/dashboards/nexaplay-overview.json`:
+
+- **Type:** Time Series
+- **Title:** Memory Usage (MB) — Last Hour
+- **Query:** `process_resident_memory_bytes{job='nexaplay-app'} / 1024 / 1024`
+- **Unit:** `megabytes` (Grafana built-in unit, displays as MB)
+- **Time override:** `timeFrom: 1h` — shows the last hour regardless of the dashboard's global time range
+- **Grid position:** full-width row below the existing four panels (`y: 16, w: 24, h: 8`)
+
+The query divides the raw byte value by 1024 twice to convert bytes → kilobytes → megabytes. The `job='nexaplay-app'` label filter scopes the metric to the FastAPI app only, excluding any other processes that might expose the same metric name.
+
+This panel is directly relevant to an incident scenario: a memory leak or spike during high load will be visible here before it causes a crash.
+
+**Check if `grafana dashboard json` is valid**:
+
+```pwsh
+Get-Content grafana/dashboards/nexaplay-overview.json | python -m json.tool --no-ensure-ascii > $null && Write-Host "JSON valid" || Write-Host "JSON invalid"
+```
+
+**Output**:
+
+```pwsh
+JSON valid
+```
+
+```py
+python -m json.tool grafana/dashboards/nexaplay-overview.json > /dev/null && echo "JSON valid" || echo "JSON invalid"
+```
+
+**Output**
+
+```py
+JSON valid
+```
+
+**Fifth dashboard**:
+
+![5th_dashboard](images/grafana-dashboards-5th-panel.png)
+
+---
+
+### ServiceDown Alert — Re-test
+
+The `ServiceDown` alert was re-tested against the freshly restarted stack:
+
+**Step 1 — Stop the app:**
+
+```sh
+docker compose stop app
+```
+
+**Step 2 — Watch Prometheus:**
+
+Within ~15 seconds the alert appeared in **PENDING** state. After 1 minute it transitioned to **FIRING** and Alertmanager forwarded the payload to the webhook.
+
+![pending_alert](images/prometheus-alert-pending2.png)
+![firing_alerts](images/prometheus-alert-firing2.png)
+
+**Step 3 — Restore the app:**
+
+```sh
+docker compose start app
+```
+
+Within ~30 seconds the alert returned to **inactive** and Alertmanager sent a `resolved` notification. End-to-end pipeline confirmed working on the clean restart.
+
+![alert_inactive](images/prometheus-alert-incative2.png)
+![webhook_resolved](images/prometheus-alert-webhook-resolved2.png)
+
+---
+
+### Runbook
+
+A `runbook.md` file was created at the project root. It covers all three alert rules (`ServiceDown`, `HighErrorRate`, `HighMatchmakingLatency`) in plain language — written for someone who has never seen the stack before.
+
+The `ServiceDown` entry explains:
+- What the alert means (Prometheus cannot reach the app for > 1 minute)
+- What to check first (`docker compose ps`, then `docker compose logs --tail=50 app`)
+- How to restore the service (`docker compose start app` for a simple restart, `docker compose down && docker compose up --build -d` for a full clean restart)
+- A table of common crash causes and their fixes
+- How to confirm recovery (Prometheus targets, alert state, Grafana dashboard)
+
+---
+
+### Key Takeaways
+
+- A clean restart is the fastest way to confirm the stack is reproducible — if it breaks on a fresh `docker compose up --build`, something is wrong with the config, not just the running state.
+- The memory panel uses `/ 1024 / 1024` rather than `/ 1024^2` because PromQL operator precedence with `^` can behave unexpectedly in some Grafana versions; the explicit two-step division is unambiguous.
+- The `timeFrom` override on the memory panel lets it show a full hour of history even when the dashboard global range is set to 30 minutes — useful for spotting slow memory trends that would be invisible in a shorter window.
+- Writing the runbook forced a clear articulation of the recovery steps, which surfaced a gap: the runbook now documents the `OOMKilled` scenario, which is exactly the kind of failure the memory panel is designed to catch early.
