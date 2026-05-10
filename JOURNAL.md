@@ -670,3 +670,144 @@ The `ServiceDown` entry explains:
 - The memory panel uses `/ 1024 / 1024` rather than `/ 1024^2` because PromQL operator precedence with `^` can behave unexpectedly in some Grafana versions; the explicit two-step division is unambiguous.
 - The `timeFrom` override on the memory panel lets it show a full hour of history even when the dashboard global range is set to 30 minutes — useful for spotting slow memory trends that would be invisible in a shorter window.
 - Writing the runbook forced a clear articulation of the recovery steps, which surfaced a gap: the runbook now documents the `OOMKilled` scenario, which is exactly the kind of failure the memory panel is designed to catch early.
+
+---
+
+## Day 2: Operation Server Meltdown — Incident Simulation
+
+### Overview
+
+The goal for Day 2 of Week 2 was to run the full incident simulation end-to-end: establish a healthy baseline with the load generator, trigger the incident, investigate using only the Grafana dashboard and Prometheus (no logs, no SSH), resolve it, and write the incident report while the details were fresh.
+
+---
+
+### Step 1 — Healthy Baseline
+
+The load generator was started first:
+
+```sh
+python scripts/load_generator.py
+```
+
+![load-generated](images/nexa-play-laod-generator.png)
+
+Five worker threads began hitting `/health`, `/player/login`, `/matchmaking/find`, and `/game/session` with weighted traffic (40% matchmaking, 25% game sessions, 20% health, 15% logins). After ~5 minutes of warm-up the dashboard showed a stable baseline:
+
+| Panel | Baseline reading |
+|---|---|
+| Active Players | ~1,003 (green) |
+| Request Rate | ~2.5 req/s across all endpoints, all 200-status |
+| Error Rate | No data (0% errors) |
+| CPU Usage | ~0.696% |
+| Memory Usage | ~45.15–45.2 MB |
+
+The load generator terminal confirmed zero errors across 1,500+ requests:
+
+```
+[18:01:11]  requests=  1591  ok=  1591  errors=  0  error_rate=0.0%
+```
+
+---
+
+### Step 2 — Incident Triggered
+
+```sh
+curl -X POST http://localhost:8000/admin/incident/start
+```
+
+**Output:**
+
+```json
+{"message":"Incident started. Matchmaking is now degraded."}
+```
+
+**Trigger time: 18:08**
+
+![incident-triggered](images/nexa-play-laod-generator-incident.png)
+
+---
+
+### Step 3 — Dashboard Observation (Investigation)
+
+![alt text](images/nexa-play-laod-generator-dashboard.png)
+
+Within ~2 minutes of triggering, the dashboard changed dramatically:
+
+**Active Players** dropped from 1,003 (green) to **240** (red) — below the 300 threshold, triggering the red background. The simulation thread had switched to the incident range (200–400).
+
+![alt text](images/nexa-play-laod-generator-incident-dashboard.png)
+![alt text](images/nexa-play-laod-generator-incident-dashboard2.png)
+
+**Error Rate** jumped from "No data" to **100%** (red). Every matchmaking request was returning a 500. This was the most alarming panel — a complete failure of the matchmaking endpoint, not a partial degradation.
+
+**Request Rate** showed a new series in the legend: `/matchmaking/find 500`. The overall throughput across all endpoints began declining as the 5 load generator workers backed up waiting for slow matchmaking responses (2–5 seconds each vs. the normal 100–300 ms). By 18:12 the total rate had dropped noticeably.
+
+**CPU Usage** stayed at ~0.5–0.55% throughout. The host was not under load — this was an application-level failure, not a resource exhaustion.
+
+**Memory Usage** stepped up slightly from ~45.2 MB to ~45.3–45.5 MB. The increase was small and stable — no runaway growth, ruling out a memory leak.
+
+The load generator terminal showed errors beginning at `[18:08:26]` and climbing steadily:
+
+```
+[18:08:26]  requests=  4013  ok=  4011  errors=   2  error_rate=0.0%
+[18:09:11]  requests=  4115  ok=  4082  errors=  33  error_rate=0.8%
+[18:10:11]  requests=  4244  ok=  4178  errors=  66  error_rate=1.6%
+[18:11:11]  requests=  4387  ok=  4288  errors=  99  error_rate=2.3%
+```
+
+The cumulative error rate in the terminal appeared low (2.3%) because it averaged across the entire session including the clean baseline period. The Grafana panel showed 100% because it used `rate()` over the last 1 minute — only the current window, where every matchmaking request was failing.
+
+---
+
+### Step 4 — Prometheus Alert
+
+The `HighErrorRate` alert fired. The rule requires >5% error rate for 2 consecutive minutes. Given errors started at 18:08:26, the alert entered PENDING state almost immediately and transitioned to FIRING at approximately **18:10–18:11** — about **2–3 minutes** after the incident started.
+
+The alert was delivered to webhook.site as a JSON POST:
+
+- `status: "firing"`
+- `alertname: HighErrorRate`
+- `severity: warning`
+- `annotations.summary: "High 5xx error rate on NexaPlay"`
+
+---
+
+### Step 5 — Resolution
+
+```sh
+docker compose restart app
+```
+
+Recovery confirmed on the dashboard within ~30 seconds:
+
+- Active Players: back to **881** (green)
+- Error Rate: back to **No data**
+- Request Rate: `/matchmaking/find 500` series gone; only 200-status series visible
+- Memory: stabilised at ~45.1 MB
+
+![alt text](images/nexa-play-laod-generator-incident-recovery-dashboard.png)
+![alt text](images/nexa-play-laod-generator-incident-recovery-dashboard2.png)
+
+Alertmanager sent a `status: "resolved"` notification to webhook.site confirming the alert cleared end-to-end.
+
+---
+
+### Step 6 — Incident Report
+
+The full incident report was written and saved to `incident-report.md` at the project root. It follows the template from Section 7.3 of the project brief and covers:
+
+- What happened and what players experienced
+- How the alert was detected and which panel showed it first
+- Investigation findings with specific metric readings
+- The fix command and how recovery was confirmed
+- One prevention measure: a circuit breaker on the matchmaking service
+
+---
+
+### Key Takeaways
+
+- The **Error Rate panel** was the most decisive signal — jumping from "No data" to 100% in under a minute. The Active Players drop was a secondary confirmation.
+- **CPU and memory were red herrings** in this incident. Both stayed normal throughout. Without the error rate and request rate panels, you might have spent time looking for a resource problem that did not exist.
+- The **cumulative error rate in the load generator terminal was misleading** (2.3%) compared to the Grafana panel (100%). This is why `rate()` over a short window is more useful for incident detection than a running total — it shows what is happening *now*, not what happened on average over the whole session.
+- The `HighErrorRate` alert fired ~2–3 minutes after the incident started. In a real tournament with 12,000 players, that is 2–3 minutes of players hitting errors before anyone is paged. A shorter `for` duration (e.g. 30s instead of 2m) would reduce detection time at the cost of more false positives from brief spikes.
+- The **memory panel proved its value** even though memory was not the cause — it ruled out a memory leak quickly, narrowing the investigation to application logic rather than infrastructure.
