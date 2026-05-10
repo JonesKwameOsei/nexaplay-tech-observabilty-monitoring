@@ -813,3 +813,177 @@ The full incident report was written and saved to `incident-report.md` at the pr
 - The **cumulative error rate in the load generator terminal was misleading** (2.3%) compared to the Grafana panel (100%). This is why `rate()` over a short window is more useful for incident detection than a running total — it shows what is happening *now*, not what happened on average over the whole session.
 - The `HighErrorRate` alert fired ~2–3 minutes after the incident started. In a real tournament with 12,000 players, that is 2–3 minutes of players hitting errors before anyone is paged. A shorter `for` duration (e.g. 30s instead of 2m) would reduce detection time at the cost of more false positives from brief spikes.
 - The **memory panel proved its value** even though memory was not the cause — it ruled out a memory leak quickly, narrowing the investigation to application logic rather than infrastructure.
+
+---
+
+## Day 3: Cloud Export to AWS S3 Bucket & CI Validation
+
+### Overview
+
+The goal for Day 3 was to back up the Grafana dashboard to S3 using a least-privilege IAM user, write an export script, and set up a GitHub Actions workflow that validates the core config files on every push.
+
+---
+
+### Step 1 — S3 Bucket
+
+Created the bucket using the AWS CLI only (no console):
+
+```bash
+aws s3api create-bucket --bucket j0nes-osei-nexaplay-dashboards --region us-east-1
+```
+
+**Output:**
+
+```json
+{
+    "Location": "/j0nes-osei-nexaplay-dashboards",
+    "BucketArn": "arn:aws:s3:::j0nes-osei-nexaplay-dashboards"
+}
+```
+
+---
+
+### Step 2 — IAM User and Least-Privilege Policy
+
+Created a dedicated IAM user for the export script:
+
+```bash
+aws iam create-user --user-name nexaplay-dashboard-exporter
+```
+
+Wrote a targeted policy (`scripts/iam-policy.json`) that allows **only** `s3:PutObject` on the specific bucket — no `ListBucket`, no `GetObject`, no wildcard:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowDashboardUploadOnly",
+      "Effect": "Allow",
+      "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::j0nes-osei-nexaplay-dashboards/*"
+    }
+  ]
+}
+```
+
+Created and attached the policy:
+
+```bash
+aws iam create-policy \
+  --policy-name nexaplay-s3-putobject-only \
+  --policy-document file://scripts/iam-policy.json
+
+aws iam attach-user-policy \
+  --user-name nexaplay-dashboard-exporter \
+  --policy-arn arn:aws:iam::241893993378:policy/nexaplay-s3-putobject-only
+```
+
+Confirmed attachment:
+
+```bash
+aws iam list-attached-user-policies --user-name nexaplay-dashboard-exporter
+```
+
+**Output:**
+
+```json
+{
+    "AttachedPolicies": [
+        {
+            "PolicyName": "nexaplay-s3-putobject-only",
+            "PolicyArn": "arn:aws:iam::241893993378:policy/nexaplay-s3-putobject-only"
+        }
+    ]
+}
+```
+
+Generated access keys and saved them to `.env` (not committed):
+
+```bash
+aws iam create-access-key --user-name nexaplay-dashboard-exporter
+```
+
+`.env` updated with:
+
+```
+AWS_ACCESS_KEY_ID=<key id>
+AWS_SECRET_ACCESS_KEY=<secret>
+AWS_REGION=us-east-1
+S3_BUCKET_NAME=j0nes-osei-nexaplay-dashboards
+```
+
+Confirmed `.env` is in `.gitignore` and does not appear in `git status` as a staged file.
+
+---
+
+### Step 3 — Export Script (`scripts/export_to_s3.py`)
+
+Wrote `scripts/export_to_s3.py` using `boto3`. The script:
+
+1. Reads credentials and bucket name from environment variables (via `.env`)
+2. Validates the dashboard JSON is well-formed before uploading
+3. Uploads `grafana/dashboards/nexaplay-overview.json` to `s3://j0nes-osei-nexaplay-dashboards/dashboards/nexaplay-overview.json`
+4. Sets `ContentType: application/json` on the object
+
+Run:
+
+```bash
+python scripts/export_to_s3.py
+```
+
+**Output:**
+
+```
+=== NexaPlay Dashboard Exporter ===
+[INFO] Uploading nexaplay-overview.json → s3://j0nes-osei-nexaplay-dashboards/dashboards/nexaplay-overview.json
+[OK]   Upload complete.
+       Verify with: aws s3 ls s3://j0nes-osei-nexaplay-dashboards/dashboards/
+```
+
+Verified the file is in S3:
+
+```bash
+aws s3 ls s3://j0nes-osei-nexaplay-dashboards/dashboards/
+```
+
+**Output:**
+
+```
+2026-05-10 20:16:49       4273 nexaplay-overview.json
+```
+
+---
+
+### Step 4 — GitHub Actions Workflow (`.github/workflows/validate.yml`)
+
+Wrote a workflow that runs on every push to any branch and validates four things:
+
+| Step | What it checks |
+|---|---|
+| Verify Docker Compose is available | `docker compose version` — confirms the runner has Compose |
+| Validate docker-compose.yml syntax | `docker compose -f docker-compose.yml config --quiet` |
+| Validate prometheus.yml with promtool | Runs `promtool check config` inside the Prometheus container |
+| Validate alert rules with promtool | Runs `promtool check rules` on `alerts.yml` |
+| Validate Grafana dashboard JSON | `python3 -m json.tool` — confirms valid JSON |
+
+**Two fixes were needed before the workflow passed:**
+
+1. The original step tried to install `docker-compose-plugin` via `apt-get`. On `ubuntu-latest`, Docker Compose is already present as `docker compose` (the v2 plugin) — the package name is not available in the default apt sources. Fix: removed the install step entirely and added a `docker compose version` check instead.
+
+2. The `promtool` steps failed because the Prometheus image's default entrypoint is the `prometheus` binary, not `promtool`. Running `docker run prom/prometheus:v2.51.2 promtool check config ...` passed `promtool` as an argument to the prometheus entrypoint, which ignored it. Fix: added `--entrypoint /bin/promtool` to both `docker run` commands so the container runs `promtool` directly.
+
+Final workflow run: **all 7 steps green** in 12 seconds (run #3).
+
+![config-validation](images/config-validation-successful.png)
+![alt text](images/config-validation-successful2.png)
+
+---
+
+### Key Takeaways
+
+- `aws s3 ls` returning empty output on a new bucket is correct — it means the bucket exists and is accessible. An error would mean the bucket doesn't exist or credentials are wrong.
+- The IAM policy uses `Resource: arn:aws:s3:::j0nes-osei-nexaplay-dashboards/*` (with the `/*` suffix) because `s3:PutObject` operates on objects, not the bucket itself. Without the `/*` the policy would silently fail to match any real upload.
+- `AmazonS3FullAccess` would give the export user the ability to read, delete, and list every object in every bucket in the account. The targeted policy limits the blast radius to a single write operation on a single bucket — if the key is ever leaked, the attacker can only overwrite dashboard JSON files.
+- GitHub Actions `ubuntu-latest` runners come with Docker and Docker Compose v2 pre-installed. There is no need to install either — just verify they are present with a version check.
+- The `--entrypoint` flag is the correct way to run a non-default binary from a Docker image. The Prometheus image ships both `prometheus` and `promtool` at `/bin/` — the entrypoint just determines which one runs when you call `docker run`.
