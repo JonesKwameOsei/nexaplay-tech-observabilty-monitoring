@@ -1,9 +1,30 @@
-AWS_ACCESS_KEY_ID=your_access_key_here
-AWS_SECRET_ACCESS_KEY=your_secret_key_here
-AWS_REGION=us-east-1
-S3_BUCKET_NAME=yourname-nexaplay-dashboards
+# Environment variables — never commit real credentials
+.env
 
-# Files to ignore
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Project-internal docs (not for the repo)
 project/
 kiro.md
-.env
