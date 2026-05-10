@@ -31,18 +31,20 @@ jobs:
       - name: Validate prometheus.yml with promtool
         run: |
           docker run --rm \
+            --entrypoint /bin/promtool \
             -v "${{ github.workspace }}/prometheus:/etc/prometheus:ro" \
             prom/prometheus:v2.51.2 \
-            promtool check config /etc/prometheus/prometheus.yml
+            check config /etc/prometheus/prometheus.yml
           echo "prometheus.yml is valid"
 
       # ── alerts.yml ────────────────────────────────────────────────────────
       - name: Validate alert rules with promtool
         run: |
           docker run --rm \
+            --entrypoint /bin/promtool \
             -v "${{ github.workspace }}/prometheus:/etc/prometheus:ro" \
             prom/prometheus:v2.51.2 \
-            promtool check rules /etc/prometheus/rules/alerts.yml
+            check rules /etc/prometheus/rules/alerts.yml
           echo "alerts.yml is valid"
 
       # ── Dashboard JSON ────────────────────────────────────────────────────
