@@ -786,9 +786,11 @@ Recovery confirmed on the dashboard within ~30 seconds:
 - Memory: stabilised at ~45.1 MB
 
 ![alt text](images/nexa-play-laod-generator-incident-recovery-dashboard.png)
-![alt text](images/nexa-play-laod-generator-incident-recovery-dashboard2.png)
+![alt text](images/nexa-play-laod-generator-incident-recovery-dashboard3.png)
 
 Alertmanager sent a `status: "resolved"` notification to webhook.site confirming the alert cleared end-to-end.
+
+![alt text](images/nexa-play-laod-generator-incident-alert-recovered.png)
 
 ---
 

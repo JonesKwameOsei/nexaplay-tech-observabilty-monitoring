@@ -90,7 +90,7 @@ Recovery was confirmed on the dashboard within ~30 seconds:
 
 ![incident-recovery-1](images/nexa-play-laod-generator-incident-recovery-dashboard.png)
 
-![total-recovery](images/nexa-play-laod-generator-incident-recovery-dashboard2.png)
+![total-recovery](images/nexa-play-laod-generator-incident-recovery-dashboard3.png)
 
 ---
 
