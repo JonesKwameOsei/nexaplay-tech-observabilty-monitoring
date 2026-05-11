@@ -987,3 +987,267 @@ Final workflow run: **all 7 steps green** in 12 seconds (run #3).
 - `AmazonS3FullAccess` would give the export user the ability to read, delete, and list every object in every bucket in the account. The targeted policy limits the blast radius to a single write operation on a single bucket — if the key is ever leaked, the attacker can only overwrite dashboard JSON files.
 - GitHub Actions `ubuntu-latest` runners come with Docker and Docker Compose v2 pre-installed. There is no need to install either — just verify they are present with a version check.
 - The `--entrypoint` flag is the correct way to run a non-default binary from a Docker image. The Prometheus image ships both `prometheus` and `promtool` at `/bin/` — the entrypoint just determines which one runs when you call `docker run`.
+
+---
+
+## Day 4: Cleanup, Security Check & Final Reflection
+
+### Overview
+
+The goal for Day 4 was to finalise the runbook, run a security audit, tear down all AWS resources, confirm the local stack still works from a clean restart, and write the individual reflection.
+
+---
+
+### Runbook Finalised
+
+`runbook.md` was rewritten to the final standard. All three alert entries (`ServiceDown`, `HighErrorRate`, `HighMatchmakingLatency`) now include:
+
+- What the alert means (plain language, no assumed knowledge)
+- What to check first (ordered steps with exact commands)
+- Common causes (table format: symptom → cause → fix)
+- How to resolve (specific commands for each scenario)
+- How to confirm recovery (exact signals to look for in Grafana, Prometheus, and Alertmanager)
+
+---
+
+### Security Check
+
+**1. Scan git history for committed AWS keys:**
+
+```bash
+git log --all -S 'AKIA'
+```
+
+**Output:** No commits returned. No AWS access key IDs have ever been committed to the repository.
+
+**2. Confirm `.env` is in `.gitignore`:**
+
+```bash
+cat .gitignore | grep .env
+```
+
+**Output:** `.env` — confirmed listed.
+
+```bash
+git check-ignore -v .env
+```
+
+**Output:** `.gitignore:1:.env` — git will never stage this file.
+
+**3. IAM policy review:**
+
+The `nexaplay-s3-putobject-only` policy grants exactly one permission:
+
+```json
+{
+  "Action": "s3:PutObject",
+  "Resource": "arn:aws:s3:::j0nes-osei-nexaplay-dashboards/*"
+}
+```
+
+No `s3:GetObject`, no `s3:DeleteObject`, no `s3:ListBucket`, no wildcard resource. If the access key were leaked, an attacker could only overwrite files in this one bucket — they could not read, list, or delete anything.
+
+---
+
+### AWS Resource Cleanup
+
+All resources deleted in the correct order (objects before bucket, keys before user):
+
+**Delete S3 bucket contents:**
+
+```bash
+aws s3 rm s3://j0nes-osei-nexaplay-dashboards/ --recursive
+```
+
+**Delete the bucket:**
+
+```bash
+aws s3api delete-bucket --bucket j0nes-osei-nexaplay-dashboards
+```
+
+confirmed s3 bucket deletion by running `aws s3 ls s3://j0nes-osei-nexaplay-dashboards/dashboards/` which returned nothing.
+
+**List and delete the IAM access key:**
+
+```bash
+aws iam list-access-keys --user-name nexaplay-dashboard-exporter
+```
+
+```bash
+{
+    "AccessKeyMetadata": [
+        {
+            "UserName": "nexaplay-dashboard-exporter",
+            "AccessKeyId": "xxxxxxxxxxxxxxxxxxxxxx",
+            "Status": "Active",
+            "CreateDate": "2026-05-10T19:06:05+00:00"
+        }
+    ]
+}
+```
+
+Now delete it:
+
+```bash
+aws iam delete-access-key \
+  --user-name nexaplay-dashboard-exporter \
+  --access-key-id xxxxxxxxxxxxxxxxxxxxxxx
+```
+
+confirm IAM deletion:
+
+```bash
+aws iam list-access-keys --user-name nexaplay-dashboard-exporter
+```
+
+**Output**:
+
+```bash
+{
+    "AccessKeyMetadata": []
+}
+```
+
+**Detach the policy:**
+
+```bash
+aws iam detach-user-policy \
+  --user-name nexaplay-dashboard-exporter \
+  --policy-arn arn:aws:iam::241893993378:policy/nexaplay-s3-putobject-only
+```
+
+**Delete the policy:**
+
+```bash
+aws iam delete-policy \
+  --policy-arn arn:aws:iam::241893993378:policy/nexaplay-s3-putobject-only
+```
+
+**Delete the IAM user:**
+
+```bash
+aws iam delete-user --user-name nexaplay-dashboard-exporter
+```
+
+**Confirm nothing remains:**
+
+```bash
+aws s3 ls | grep nexaplay
+aws iam get-user --user-name nexaplay-dashboard-exporter
+```
+
+```
+aws: [ERROR]: An error occurred (NoSuchEntity) when calling the GetUser operation: The user with name nexaplay-dashboard-exporter cannot be found.
+
+Additional error details:
+Type: Sender
+```
+
+---
+
+### Final Stack Restart
+
+```bash
+docker compose down -v
+```
+
+```bash
+[+] down 8/8
+ ✔ Container nexaplay-alertmanager                         Removed                                                                                                          0.6s
+ ✔ Container nexaplay-node-exporter                        Removed                                                                                                          0.8s
+ ✔ Container nexaplay-grafana                              Removed                                                                                                          0.5s
+ ✔ Container nexaplay-prometheus                           Removed                                                                                                          0.5s
+ ✔ Container nexaplay-app                                  Removed                                                                                                          0.7s
+ ✔ Volume observability_monitoring_project_grafana-data    Removed                                                                                                          0.0s
+ ✔ Volume observability_monitoring_project_prometheus-data Removed                                                                                                          0.0s
+ ✔ Network observability_monitoring_project_default        Removed                                                                                                          0.3s
+ ```
+
+
+
+The `-v` flag removes named volumes (`prometheus-data`, `grafana-data`), giving a truly clean state — no cached metrics, no saved dashboard state. After ~60 seconds:
+
+Test if app will still work:
+
+```bash
+docker compose up -d
+```
+
+```bash
+#27 DONE 0.0s
+[+] up 10/10
+ ✔ Image observability_monitoring_project-app              Built                                                                                                            2.1s
+ ✔ Image observability_monitoring_project-alertmanager     Built                                                                                                            2.1s
+ ✔ Network observability_monitoring_project_default        Created                                                                                                          0.0s
+ ✔ Volume observability_monitoring_project_grafana-data    Created                                                                                                          0.0s
+ ✔ Volume observability_monitoring_project_prometheus-data Created                                                                                                          0.0s
+ ✔ Container nexaplay-app                                  Started                                                                                                          0.6s
+ ✔ Container nexaplay-node-exporter                        Started                                                                                                          0.6s
+ ✔ Container nexaplay-alertmanager                         Started                                                                                                          0.5s
+ ✔ Container nexaplay-prometheus                           Started                                                                                                          0.8s
+ ✔ Container nexaplay-grafana                              Started                                                                                                          1.0s
+```
+
+```bash
+docker compose ps
+```
+
+All five services showing `Up` or `Up (healthy)`. Confirmed:
+
+- `http://localhost:9090/targets` — all three targets UP
+
+![rebuild](images/rebuild-worked.png)
+
+- `http://localhost:3000` — Grafana dashboard loading with all five panels
+
+![rebuild-dashboard](images/rebuild-worked-dashboard.png)
+
+- `http://localhost:9090/alerts` — all alerts inactive
+
+![rebuid-alerts](images/rebuild-worked-alerts.png)
+
+---
+
+### Individual Reflection
+
+#### How this stack addresses the five problems from Section 2.3
+
+**Problem 1 — Players report outages before engineers know**
+
+The `ServiceDown` alert fires within 1 minute of the app becoming unreachable. The `HighErrorRate` alert fires within 2 minutes of error rate exceeding 5%. In both cases, Alertmanager delivers a notification to the configured receiver (webhook, Slack, PagerDuty) before any player has time to post on Discord. The Eid al-Fitr incident took 24 minutes to reach Tunde via WhatsApp. With this stack, the on-call engineer would have been paged within 2 minutes.
+
+**Problem 2 — No automated alerts**
+
+Three alert rules now cover the three most likely failure modes: total service unavailability (`ServiceDown`), application-level errors (`HighErrorRate`), and performance degradation (`HighMatchmakingLatency`). Each rule has a tuned `for` duration to filter out transient blips — 1 minute for `ServiceDown`, 2 minutes for `HighErrorRate`, 1 minute for `HighMatchmakingLatency`. Alertmanager handles routing, grouping, and the `resolved` notification so the on-call engineer knows when the incident is over, not just when it starts.
+
+**Problem 3 — No dashboards**
+
+The five-panel Grafana dashboard gives a single-screen view of platform health: active player count, request throughput by endpoint and status, error rate percentage, CPU utilisation, and memory usage over the last hour. During the incident simulation, the dashboard showed the failure within seconds — Active Players dropped to red, Error Rate jumped to 100%, and a new `/matchmaking/find 500` series appeared in the Request Rate panel. No SSH, no log tailing, no guesswork.
+
+**Problem 4 — Logs disappear when containers restart**
+
+This is the one problem the current stack does not fully solve. Prometheus metrics survive a container restart because they are stored in the `prometheus-data` named volume. But application logs are still lost when the `nexaplay-app` container restarts. The correct fix is a log aggregation layer — Loki + Promtail, or shipping logs to CloudWatch — which is outside the scope of this project. The runbook partially mitigates this by instructing responders to save logs to a file (`docker compose logs --tail=200 app > /tmp/app-errors.txt`) before restarting.
+
+**Problem 5 — No record of what normal looks like**
+
+Prometheus stores time-series data in the `prometheus-data` volume with a default 15-day retention window. After running the load generator for 5 minutes before the incident, the dashboard had a clear baseline: ~1,003 active players, ~2.5 req/s, 0% error rate, ~45.2 MB memory. When the incident fired, the deviation from that baseline was immediately visible. The memory panel's 1-hour time window was specifically designed for this — it shows the trend, not just the current value, so a slow memory leak would be visible as a rising slope before it causes a crash.
+
+---
+
+#### What was the hardest part
+
+The hardest part was the **Alertmanager `envsubst` templating pattern** from Week 1. It required understanding three separate systems simultaneously: how Docker `ENTRYPOINT` works, how `envsubst` substitutes environment variables into files at runtime, and how `docker-compose.yml` passes `.env` values into the container environment. Getting the order of operations wrong — Alertmanager starting before `envsubst` finishes, or the variable not being exported into the container's environment — would produce a silently broken config with a literal `${ALERTMANAGER_WEBHOOK_URL}` string as the webhook URL, which would fail with no obvious error message.
+
+The second hardest part was the **GitHub Actions workflow**. Two separate failures had to be debugged without being able to run the workflow locally: the `docker-compose-plugin` apt package not being available on `ubuntu-latest`, and the Prometheus image's default entrypoint overriding the `promtool` command. Both required reading the error output carefully and understanding how Docker image entrypoints work.
+
+---
+
+#### What I would improve
+
+**1. Add log persistence.** The biggest gap in the current stack is that application logs vanish on container restart. Adding Loki and alloy would give the same time-series query experience for logs that Prometheus gives for metrics — and would have made the incident investigation faster by letting me correlate log lines with the metric spikes on the dashboard.
+
+**2. Shorten the `HighErrorRate` `for` duration.** The current 2-minute window means the alert fires 2 minutes after errors start. During the incident simulation, the error rate hit 100% within seconds of the trigger. A `for: 30s` duration would page the on-call engineer faster at the cost of slightly more false positives from brief spikes — a worthwhile trade-off for a critical player-facing service.
+
+**3. Add a `HighMatchmakingLatency` panel to the dashboard.** The current dashboard has no latency time series — only the alert rule tracks p95 latency. Adding a panel with `histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{endpoint="/matchmaking/find"}[2m]))` would make latency degradation visible before the alert fires, giving the on-call engineer earlier warning and a graph to include in the incident report.
+
+**4. Automate the S3 export in CI.** The `scripts/export_to_s3.py` script currently has to be run manually. Adding it as a step in the GitHub Actions workflow — triggered only on pushes to `master` that modify the dashboard JSON — would ensure the S3 backup is always in sync with the repository without any manual intervention.
