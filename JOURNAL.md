@@ -1015,10 +1015,12 @@ The goal for Day 4 was to finalise the runbook, run a security audit, tear down 
 **1. Scan git history for committed AWS keys:**
 
 ```bash
+# Search git history for any committed AWS access key prefixes
+# (the prefix pattern is the four characters A-K-I-A)
 git log --all -S 'AKIA'
 ```
 
-**Output:** No commits returned. No AWS access key IDs have ever been committed to the repository.
+> **Output: no commits returned.** No AWS access key IDs have ever been committed to the repository. Any future run of this command will match this journal entry as a false positive — the string appears here as documentation, not as a real credential.
 
 **2. Confirm `.env` is in `.gitignore`:**
 
